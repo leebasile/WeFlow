@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation } from 'react-router-dom'
+import { TableVirtuoso } from 'react-virtuoso'
 import {
   Aperture,
   ChevronDown,
@@ -236,6 +237,9 @@ const timestampOrDash = (timestamp?: number): string => {
 }
 
 const createTaskId = (): string => `task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+const METRICS_VIEWPORT_PREFETCH = 140
+const METRICS_BACKGROUND_BATCH = 60
+const METRICS_BACKGROUND_INTERVAL_MS = 180
 
 const WriteLayoutSelector = memo(function WriteLayoutSelector({
   writeLayout,
@@ -355,6 +359,7 @@ function ExportPage() {
   const sessionLoadTokenRef = useRef(0)
   const loadingMetricsRef = useRef<Set<string>>(new Set())
   const preselectAppliedRef = useRef(false)
+  const visibleSessionsRef = useRef<SessionRow[]>([])
 
   useEffect(() => {
     tasksRef.current = tasks
@@ -615,6 +620,10 @@ function ExportPage() {
       })
   }, [sessions, activeTab, searchKeyword, sessionMetrics])
 
+  useEffect(() => {
+    visibleSessionsRef.current = visibleSessions
+  }, [visibleSessions])
+
   const ensureSessionMetrics = useCallback(async (targetSessions: SessionRow[]) => {
     const currentMetrics = sessionMetricsRef.current
     const pending = targetSessions.filter(session => !currentMetrics[session.username] && !loadingMetricsRef.current.has(session.username))
@@ -674,13 +683,44 @@ function ExportPage() {
   }, [])
 
   useEffect(() => {
-    const targets = visibleSessions.slice(0, 40)
+    const keyword = searchKeyword.trim().toLowerCase()
+    const targets = sessions
+      .filter((session) => {
+        if (session.kind !== activeTab) return false
+        if (!keyword) return true
+        return (
+          (session.displayName || '').toLowerCase().includes(keyword) ||
+          session.username.toLowerCase().includes(keyword)
+        )
+      })
+      .sort((a, b) => (b.sortTimestamp || b.lastTimestamp || 0) - (a.sortTimestamp || a.lastTimestamp || 0))
+      .slice(0, METRICS_VIEWPORT_PREFETCH)
     void ensureSessionMetrics(targets)
-  }, [visibleSessions, ensureSessionMetrics])
+  }, [sessions, activeTab, searchKeyword, ensureSessionMetrics])
+
+  const handleTableRangeChanged = useCallback((range: { startIndex: number; endIndex: number }) => {
+    const current = visibleSessionsRef.current
+    if (current.length === 0) return
+    const start = Math.max(0, range.startIndex - METRICS_VIEWPORT_PREFETCH)
+    const end = Math.min(current.length - 1, range.endIndex + METRICS_VIEWPORT_PREFETCH)
+    if (end < start) return
+    void ensureSessionMetrics(current.slice(start, end + 1))
+  }, [ensureSessionMetrics])
 
   useEffect(() => {
     if (sessions.length === 0) return
-    void ensureSessionMetrics(sessions)
+    let cursor = 0
+    const timer = window.setInterval(() => {
+      if (cursor >= sessions.length) {
+        window.clearInterval(timer)
+        return
+      }
+      const chunk = sessions.slice(cursor, cursor + METRICS_BACKGROUND_BATCH)
+      cursor += METRICS_BACKGROUND_BATCH
+      void ensureSessionMetrics(chunk)
+    }, METRICS_BACKGROUND_INTERVAL_MS)
+
+    return () => window.clearInterval(timer)
   }, [sessions, ensureSessionMetrics])
 
   const selectedCount = selectedSessions.size
@@ -1294,12 +1334,12 @@ function ExportPage() {
     )
   }
 
-  const renderRow = (session: SessionRow) => {
+  const renderRowCells = (session: SessionRow) => {
     const metrics = sessionMetrics[session.username] || {}
     const checked = selectedSessions.has(session.username)
 
     return (
-      <tr key={session.username} className={checked ? 'selected-row' : ''}>
+      <>
         <td className="sticky-col">
           <button
             className={`select-icon-btn ${checked ? 'checked' : ''}`}
@@ -1344,7 +1384,7 @@ function ExportPage() {
         )}
 
         <td className="sticky-right">{renderActionCell(session)}</td>
-      </tr>
+      </>
     )
   }
 
@@ -1357,7 +1397,6 @@ function ExportPage() {
     return count
   }, [visibleSessions, selectedSessions])
 
-  const tableColSpan = activeTab === 'group' ? 14 : (activeTab === 'private' || activeTab === 'former_friend' ? 11 : 10)
   const canCreateTask = exportDialog.scope === 'sns'
     ? Boolean(exportFolder)
     : Boolean(exportFolder) && exportDialog.sessionIds.length > 0
@@ -1380,10 +1419,6 @@ function ExportPage() {
   const taskRunningCount = tasks.filter(task => task.status === 'running').length
   const taskQueuedCount = tasks.filter(task => task.status === 'queued').length
   const showInitialSkeleton = isLoading && sessions.length === 0
-  const tableBodyRows = useMemo(
-    () => visibleSessions.map(renderRow),
-    [visibleSessions, selectedSessions, sessionMetrics, activeTab, runningSessionIds, queuedSessionIds, nowTick, lastExportBySession]
-  )
   const chooseExportFolder = useCallback(async () => {
     const result = await window.electronAPI.dialog.openFile({
       title: '选择导出目录',
@@ -1589,37 +1624,32 @@ function ExportPage() {
         )}
 
         <div className="table-wrap">
-          <table className="session-table">
-            <thead>{renderTableHeader()}</thead>
-            <tbody>
-              {showInitialSkeleton ? (
-                <tr>
-                  <td colSpan={tableColSpan}>
-                    <div className="table-skeleton-list">
-                      {Array.from({ length: 8 }).map((_, rowIndex) => (
-                        <div key={`skeleton-row-${rowIndex}`} className="table-skeleton-item">
-                          <span className="skeleton-shimmer skeleton-dot"></span>
-                          <span className="skeleton-shimmer skeleton-avatar"></span>
-                          <span className="skeleton-shimmer skeleton-line w-30"></span>
-                          <span className="skeleton-shimmer skeleton-line w-12"></span>
-                          <span className="skeleton-shimmer skeleton-line w-12"></span>
-                          <span className="skeleton-shimmer skeleton-line w-12"></span>
-                        </div>
-                      ))}
-                    </div>
-                  </td>
-                </tr>
-              ) : visibleSessions.length === 0 ? (
-                <tr>
-                  <td colSpan={tableColSpan}>
-                    <div className="table-state">暂无会话</div>
-                  </td>
-                </tr>
-              ) : (
-                tableBodyRows
-              )}
-            </tbody>
-          </table>
+          {showInitialSkeleton ? (
+            <div className="table-skeleton-list">
+              {Array.from({ length: 8 }).map((_, rowIndex) => (
+                <div key={`skeleton-row-${rowIndex}`} className="table-skeleton-item">
+                  <span className="skeleton-shimmer skeleton-dot"></span>
+                  <span className="skeleton-shimmer skeleton-avatar"></span>
+                  <span className="skeleton-shimmer skeleton-line w-30"></span>
+                  <span className="skeleton-shimmer skeleton-line w-12"></span>
+                  <span className="skeleton-shimmer skeleton-line w-12"></span>
+                  <span className="skeleton-shimmer skeleton-line w-12"></span>
+                </div>
+              ))}
+            </div>
+          ) : visibleSessions.length === 0 ? (
+            <div className="table-state">暂无会话</div>
+          ) : (
+            <TableVirtuoso
+              className="table-virtuoso"
+              data={visibleSessions}
+              fixedHeaderContent={renderTableHeader}
+              computeItemKey={(_, session) => session.username}
+              rangeChanged={handleTableRangeChanged}
+              itemContent={(_, session) => renderRowCells(session)}
+              overscan={420}
+            />
+          )}
         </div>
       </div>
 

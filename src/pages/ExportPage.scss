@@ -549,14 +549,19 @@
 }
 
 .table-wrap {
-  overflow: auto;
+  overflow: hidden;
   border: 1px solid var(--border-color);
   border-radius: 10px;
   min-height: 0;
   flex: 1;
 }
 
-.session-table {
+.table-virtuoso {
+  height: 100%;
+}
+
+.session-table,
+.table-wrap table {
   width: 100%;
   min-width: 1300px;
   border-collapse: separate;
@@ -588,7 +593,8 @@
     background: rgba(var(--primary-rgb), 0.03);
   }
 
-  .selected-row {
+  .selected-row,
+  tbody tr:has(.select-icon-btn.checked) {
     background: rgba(var(--primary-rgb), 0.08);
   }
 
