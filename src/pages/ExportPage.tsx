@@ -242,11 +242,13 @@ const timestampOrDash = (timestamp?: number): string => {
 }
 
 const createTaskId = (): string => `task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-const MESSAGE_COUNT_VIEWPORT_PREFETCH = 180
-const MESSAGE_COUNT_ACTIVE_TAB_WARMUP_LIMIT = 960
-const METRICS_VIEWPORT_PREFETCH = 90
-const METRICS_BACKGROUND_BATCH = 40
-const METRICS_BACKGROUND_INTERVAL_MS = 220
+const MESSAGE_COUNT_VIEWPORT_PREFETCH = 90
+const MESSAGE_COUNT_ACTIVE_TAB_WARMUP_LIMIT = 240
+const MESSAGE_COUNT_REQUEST_BATCH = 120
+const METRICS_VIEWPORT_PREFETCH = 60
+const METRICS_REQUEST_BATCH = 24
+const METRICS_BACKGROUND_BATCH = 20
+const METRICS_BACKGROUND_INTERVAL_MS = 500
 const CONTACT_ENRICH_TIMEOUT_MS = 7000
 const EXPORT_SESSION_COUNT_CACHE_STALE_MS = 48 * 60 * 60 * 1000
 const EXPORT_SNS_STATS_CACHE_STALE_MS = 12 * 60 * 60 * 1000
@@ -393,6 +395,11 @@ function ExportPage() {
   const sessionLoadTokenRef = useRef(0)
   const loadingMessageCountsRef = useRef<Set<string>>(new Set())
   const loadingMetricsRef = useRef<Set<string>>(new Set())
+  const pendingMessageCountsRef = useRef<Set<string>>(new Set())
+  const pendingMetricsRef = useRef<Set<string>>(new Set())
+  const messageCountPumpRunningRef = useRef(false)
+  const metricsPumpRunningRef = useRef(false)
+  const isExportRouteRef = useRef(isExportRoute)
   const preselectAppliedRef = useRef(false)
   const visibleSessionsRef = useRef<SessionRow[]>([])
   const exportCacheScopeRef = useRef('default')
@@ -414,6 +421,10 @@ function ExportPage() {
   useEffect(() => {
     sessionMetricsRef.current = sessionMetrics
   }, [sessionMetrics])
+
+  useEffect(() => {
+    isExportRouteRef.current = isExportRoute
+  }, [isExportRoute])
 
   useEffect(() => {
     if (persistSessionCountTimerRef.current) {
@@ -452,9 +463,10 @@ function ExportPage() {
   }, [location.state])
 
   useEffect(() => {
+    if (!isExportRoute) return
     const timer = setInterval(() => setNowTick(Date.now()), 60 * 1000)
     return () => clearInterval(timer)
-  }, [])
+  }, [isExportRoute])
 
   const loadBaseConfig = useCallback(async () => {
     setIsBaseConfigLoading(true)
@@ -581,6 +593,8 @@ function ExportPage() {
     setIsSessionEnriching(false)
     loadingMessageCountsRef.current.clear()
     loadingMetricsRef.current.clear()
+    pendingMessageCountsRef.current.clear()
+    pendingMetricsRef.current.clear()
     sessionMetricsRef.current = {}
     setSessionMetrics({})
 
@@ -632,6 +646,7 @@ function ExportPage() {
         setIsSessionEnriching(true)
         void (async () => {
           try {
+            if (isStale()) return
             const contactsResult = await withTimeout(window.electronAPI.chat.getContacts(), CONTACT_ENRICH_TIMEOUT_MS)
             if (isStale()) return
 
@@ -650,6 +665,7 @@ function ExportPage() {
 
             let extraContactMap: Record<string, { displayName?: string; avatarUrl?: string }> = {}
             if (needsEnrichment.length > 0) {
+              if (isStale()) return
               const enrichResult = await withTimeout(
                 window.electronAPI.chat.enrichSessionsContactInfo(needsEnrichment),
                 CONTACT_ENRICH_TIMEOUT_MS
@@ -714,6 +730,8 @@ function ExportPage() {
     sessionLoadTokenRef.current = Date.now()
     loadingMessageCountsRef.current.clear()
     loadingMetricsRef.current.clear()
+    pendingMessageCountsRef.current.clear()
+    pendingMetricsRef.current.clear()
     setIsSessionEnriching(false)
   }, [isExportRoute])
 
@@ -769,38 +787,50 @@ function ExportPage() {
   }, [visibleSessions])
 
   const ensureSessionMessageCounts = useCallback(async (targetSessions: SessionRow[]) => {
-    if (!isExportRoute) return
-    const loadTokenAtStart = sessionLoadTokenRef.current
+    if (!isExportRouteRef.current) return
     const currentCounts = sessionMessageCountsRef.current
-    const pending = targetSessions.filter(
-      session => currentCounts[session.username] === undefined && !loadingMessageCountsRef.current.has(session.username)
-    )
-    if (pending.length === 0) return
-    for (const session of pending) {
-      loadingMessageCountsRef.current.add(session.username)
+    for (const session of targetSessions) {
+      if (currentCounts[session.username] !== undefined) continue
+      if (loadingMessageCountsRef.current.has(session.username)) continue
+      pendingMessageCountsRef.current.add(session.username)
     }
+    if (pendingMessageCountsRef.current.size === 0 || messageCountPumpRunningRef.current) return
+
+    messageCountPumpRunningRef.current = true
+    const loadTokenAtStart = sessionLoadTokenRef.current
 
     try {
-      const batchSize = pending.length > 260 ? 260 : pending.length
-      for (let i = 0; i < pending.length; i += batchSize) {
-        if (loadTokenAtStart !== sessionLoadTokenRef.current) return
-        const chunk = pending.slice(i, i + batchSize)
-        const ids = chunk.map(session => session.username)
+      while (isExportRouteRef.current && loadTokenAtStart === sessionLoadTokenRef.current) {
+        const ids = Array.from(pendingMessageCountsRef.current).slice(0, MESSAGE_COUNT_REQUEST_BATCH)
+        if (ids.length === 0) break
+
+        for (const id of ids) {
+          pendingMessageCountsRef.current.delete(id)
+          loadingMessageCountsRef.current.add(id)
+        }
+
         const chunkUpdates: Record<string, number> = {}
 
         try {
           const result = await withTimeout(window.electronAPI.chat.getSessionMessageCounts(ids), 10000)
           if (!result) {
-            continue
-          }
-          for (const session of chunk) {
-            const value = result?.success && result.counts ? result.counts[session.username] : undefined
-            chunkUpdates[session.username] = typeof value === 'number' ? value : 0
+            for (const id of ids) {
+              chunkUpdates[id] = 0
+            }
+          } else {
+            for (const id of ids) {
+              const value = result?.success && result.counts ? result.counts[id] : undefined
+              chunkUpdates[id] = typeof value === 'number' ? value : 0
+            }
           }
         } catch (error) {
           console.error('加载会话总消息数失败:', error)
-          for (const session of chunk) {
-            chunkUpdates[session.username] = 0
+          for (const id of ids) {
+            chunkUpdates[id] = 0
+          }
+        } finally {
+          for (const id of ids) {
+            loadingMessageCountsRef.current.delete(id)
           }
         }
 
@@ -809,72 +839,95 @@ function ExportPage() {
         }
       }
     } finally {
-      for (const session of pending) {
-        loadingMessageCountsRef.current.delete(session.username)
-      }
+      messageCountPumpRunningRef.current = false
     }
-  }, [isExportRoute])
+  }, [])
 
   const ensureSessionMetrics = useCallback(async (targetSessions: SessionRow[]) => {
-    if (!isExportRoute) return
-    const loadTokenAtStart = sessionLoadTokenRef.current
+    if (!isExportRouteRef.current) return
     const currentMetrics = sessionMetricsRef.current
-    const pending = targetSessions.filter(session => !currentMetrics[session.username] && !loadingMetricsRef.current.has(session.username))
-    if (pending.length === 0) return
-
-    const updates: Record<string, SessionMetrics> = {}
-    for (const session of pending) {
-      loadingMetricsRef.current.add(session.username)
+    for (const session of targetSessions) {
+      if (currentMetrics[session.username]) continue
+      if (loadingMetricsRef.current.has(session.username)) continue
+      pendingMetricsRef.current.add(session.username)
     }
+    if (pendingMetricsRef.current.size === 0 || metricsPumpRunningRef.current) return
+
+    metricsPumpRunningRef.current = true
+    const loadTokenAtStart = sessionLoadTokenRef.current
 
     try {
-      const batchSize = 80
-      for (let i = 0; i < pending.length; i += batchSize) {
-        if (loadTokenAtStart !== sessionLoadTokenRef.current) return
-        const chunk = pending.slice(i, i + batchSize)
-        const ids = chunk.map(session => session.username)
+      while (isExportRouteRef.current && loadTokenAtStart === sessionLoadTokenRef.current) {
+        const ids = Array.from(pendingMetricsRef.current).slice(0, METRICS_REQUEST_BATCH)
+        if (ids.length === 0) break
+
+        for (const id of ids) {
+          pendingMetricsRef.current.delete(id)
+          loadingMetricsRef.current.add(id)
+        }
+
+        const updates: Record<string, SessionMetrics> = {}
 
         try {
           const statsResult = await window.electronAPI.chat.getExportSessionStats(ids)
           if (!statsResult.success || !statsResult.data) {
             console.error('加载会话统计失败:', statsResult.error || '未知错误')
-            continue
-          }
-
-          for (const session of chunk) {
-            const raw = statsResult.data[session.username]
-            // 成功响应但无明细时按 0 回填，避免该行反复重试导致滚动抖动。
-            updates[session.username] = {
-              totalMessages: raw?.totalMessages ?? 0,
-              voiceMessages: raw?.voiceMessages ?? 0,
-              imageMessages: raw?.imageMessages ?? 0,
-              videoMessages: raw?.videoMessages ?? 0,
-              emojiMessages: raw?.emojiMessages ?? 0,
-              privateMutualGroups: raw?.privateMutualGroups,
-              groupMemberCount: raw?.groupMemberCount,
-              groupMyMessages: raw?.groupMyMessages,
-              groupActiveSpeakers: raw?.groupActiveSpeakers,
-              groupMutualFriends: raw?.groupMutualFriends,
-              firstTimestamp: raw?.firstTimestamp,
-              lastTimestamp: raw?.lastTimestamp
+            for (const id of ids) {
+              updates[id] = {
+                totalMessages: 0,
+                voiceMessages: 0,
+                imageMessages: 0,
+                videoMessages: 0,
+                emojiMessages: 0
+              }
+            }
+          } else {
+            for (const id of ids) {
+              const raw = statsResult.data[id]
+              // 成功响应但无明细时按 0 回填，避免该行反复重试导致滚动抖动。
+              updates[id] = {
+                totalMessages: raw?.totalMessages ?? 0,
+                voiceMessages: raw?.voiceMessages ?? 0,
+                imageMessages: raw?.imageMessages ?? 0,
+                videoMessages: raw?.videoMessages ?? 0,
+                emojiMessages: raw?.emojiMessages ?? 0,
+                privateMutualGroups: raw?.privateMutualGroups,
+                groupMemberCount: raw?.groupMemberCount,
+                groupMyMessages: raw?.groupMyMessages,
+                groupActiveSpeakers: raw?.groupActiveSpeakers,
+                groupMutualFriends: raw?.groupMutualFriends,
+                firstTimestamp: raw?.firstTimestamp,
+                lastTimestamp: raw?.lastTimestamp
+              }
             }
           }
         } catch (error) {
           console.error('加载会话统计分批失败:', error)
+          for (const id of ids) {
+            updates[id] = {
+              totalMessages: 0,
+              voiceMessages: 0,
+              imageMessages: 0,
+              videoMessages: 0,
+              emojiMessages: 0
+            }
+          }
+        } finally {
+          for (const id of ids) {
+            loadingMetricsRef.current.delete(id)
+          }
+        }
+
+        if (loadTokenAtStart === sessionLoadTokenRef.current && Object.keys(updates).length > 0) {
+          setSessionMetrics(prev => ({ ...prev, ...updates }))
         }
       }
     } catch (error) {
       console.error('加载会话统计失败:', error)
     } finally {
-      for (const session of pending) {
-        loadingMetricsRef.current.delete(session.username)
-      }
+      metricsPumpRunningRef.current = false
     }
-
-    if (loadTokenAtStart === sessionLoadTokenRef.current && Object.keys(updates).length > 0) {
-      setSessionMetrics(prev => ({ ...prev, ...updates }))
-    }
-  }, [isExportRoute])
+  }, [])
 
   useEffect(() => {
     if (!isExportRoute) return
@@ -1660,8 +1713,71 @@ function ExportPage() {
               await configService.setExportWriteLayout(value)
             }}
           />
+
+          <div className="task-center-control">
+            <span className="control-label">任务中心</span>
+            <div className="task-center-inline">
+              <div className="task-summary">
+                <span>进行中 {taskRunningCount}</span>
+                <span>排队 {taskQueuedCount}</span>
+                <span>总计 {tasks.length}</span>
+              </div>
+              <button
+                className="task-collapse-btn"
+                type="button"
+                onClick={() => setIsTaskCenterExpanded(prev => !prev)}
+              >
+                {isTaskCenterExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                {isTaskCenterExpanded ? '收起' : '展开'}
+              </button>
+            </div>
+          </div>
         </div>
       </div>
+
+      {isTaskCenterExpanded && (
+        <div className="task-center expanded">
+          {tasks.length === 0 ? (
+            <div className="task-empty">暂无任务。点击会话导出或卡片导出后会在这里创建任务。</div>
+          ) : (
+            <div className="task-list">
+              {tasks.map(task => (
+                <div key={task.id} className={`task-card ${task.status}`}>
+                  <div className="task-main">
+                    <div className="task-title">{task.title}</div>
+                    <div className="task-meta">
+                      <span className={`task-status ${task.status}`}>{task.status === 'queued' ? '排队中' : task.status === 'running' ? '进行中' : task.status === 'success' ? '已完成' : '失败'}</span>
+                      <span>{new Date(task.createdAt).toLocaleString('zh-CN')}</span>
+                    </div>
+                    {task.status === 'running' && (
+                      <>
+                        <div className="task-progress-bar">
+                          <div
+                            className="task-progress-fill"
+                            style={{ width: `${task.progress.total > 0 ? (task.progress.current / task.progress.total) * 100 : 0}%` }}
+                          />
+                        </div>
+                        <div className="task-progress-text">
+                          {task.progress.total > 0
+                            ? `${task.progress.current} / ${task.progress.total}`
+                            : '处理中'}
+                          {task.progress.phaseLabel ? ` · ${task.progress.phaseLabel}` : ''}
+                        </div>
+                      </>
+                    )}
+                    {task.status === 'error' && <div className="task-error">{task.error || '任务失败'}</div>}
+                  </div>
+                  <div className="task-actions">
+                    <button className="secondary-btn" onClick={() => exportFolder && void window.electronAPI.shell.openPath(exportFolder)}>
+                      <FolderOpen size={14} /> 目录
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="content-card-grid">
         {contentCards.map(card => {
@@ -1703,65 +1819,6 @@ function ExportPage() {
             </div>
           )
         })}
-      </div>
-
-      <div className={`task-center ${isTaskCenterExpanded ? 'expanded' : 'collapsed'}`}>
-        <div className="task-center-header">
-          <div className="section-title">任务中心</div>
-          <div className="task-summary">
-            <span>进行中 {taskRunningCount}</span>
-            <span>排队 {taskQueuedCount}</span>
-            <span>总计 {tasks.length}</span>
-          </div>
-          <button
-            className="task-collapse-btn"
-            type="button"
-            onClick={() => setIsTaskCenterExpanded(prev => !prev)}
-          >
-            {isTaskCenterExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-            {isTaskCenterExpanded ? '收起' : '展开'}
-          </button>
-        </div>
-
-        {isTaskCenterExpanded && (tasks.length === 0 ? (
-          <div className="task-empty">暂无任务。点击会话导出或卡片导出后会在这里创建任务。</div>
-        ) : (
-          <div className="task-list">
-            {tasks.map(task => (
-              <div key={task.id} className={`task-card ${task.status}`}>
-                <div className="task-main">
-                  <div className="task-title">{task.title}</div>
-                  <div className="task-meta">
-                    <span className={`task-status ${task.status}`}>{task.status === 'queued' ? '排队中' : task.status === 'running' ? '进行中' : task.status === 'success' ? '已完成' : '失败'}</span>
-                    <span>{new Date(task.createdAt).toLocaleString('zh-CN')}</span>
-                  </div>
-                  {task.status === 'running' && (
-                    <>
-                      <div className="task-progress-bar">
-                        <div
-                          className="task-progress-fill"
-                          style={{ width: `${task.progress.total > 0 ? (task.progress.current / task.progress.total) * 100 : 0}%` }}
-                        />
-                      </div>
-                      <div className="task-progress-text">
-                        {task.progress.total > 0
-                          ? `${task.progress.current} / ${task.progress.total}`
-                          : '处理中'}
-                        {task.progress.phaseLabel ? ` · ${task.progress.phaseLabel}` : ''}
-                      </div>
-                    </>
-                  )}
-                  {task.status === 'error' && <div className="task-error">{task.error || '任务失败'}</div>}
-                </div>
-                <div className="task-actions">
-                  <button className="secondary-btn" onClick={() => exportFolder && void window.electronAPI.shell.openPath(exportFolder)}>
-                    <FolderOpen size={14} /> 目录
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        ))}
       </div>
 
       <div className="session-table-section">
