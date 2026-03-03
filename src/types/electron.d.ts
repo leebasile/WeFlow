@@ -61,6 +61,53 @@ export interface ElectronAPI {
     read: () => Promise<{ success: boolean; content?: string; error?: string }>
     debug: (data: any) => void
   }
+  diagnostics: {
+    getExportCardLogs: (options?: { limit?: number }) => Promise<{
+      logs: Array<{
+        id: string
+        ts: number
+        source: 'frontend' | 'main' | 'backend' | 'worker'
+        level: 'debug' | 'info' | 'warn' | 'error'
+        message: string
+        traceId?: string
+        stepId?: string
+        stepName?: string
+        status?: 'running' | 'done' | 'failed' | 'timeout'
+        durationMs?: number
+        data?: Record<string, unknown>
+      }>
+      activeSteps: Array<{
+        traceId: string
+        stepId: string
+        stepName: string
+        source: 'frontend' | 'main' | 'backend' | 'worker'
+        elapsedMs: number
+        stallMs: number
+        startedAt: number
+        lastUpdatedAt: number
+        message?: string
+      }>
+      summary: {
+        totalLogs: number
+        activeStepCount: number
+        errorCount: number
+        warnCount: number
+        timeoutCount: number
+        lastUpdatedAt: number
+      }
+    }>
+    clearExportCardLogs: () => Promise<{ success: boolean }>
+    exportExportCardLogs: (payload: {
+      filePath: string
+      frontendLogs?: unknown[]
+    }) => Promise<{
+      success: boolean
+      filePath?: string
+      summaryPath?: string
+      count?: number
+      error?: string
+    }>
+  }
   dbPath: {
     autoDetect: () => Promise<{ success: boolean; path?: string; error?: string }>
     scanWxids: (rootPath: string) => Promise<WxidInfo[]>
@@ -116,6 +163,7 @@ export interface ElectronAPI {
     getExportContentSessionCounts: (options?: {
       triggerRefresh?: boolean
       forceRefresh?: boolean
+      traceId?: string
     }) => Promise<{
       success: boolean
       data?: {
@@ -131,7 +179,7 @@ export interface ElectronAPI {
       }
       error?: string
     }>
-    refreshExportContentSessionCounts: (options?: { forceRefresh?: boolean }) => Promise<{
+    refreshExportContentSessionCounts: (options?: { forceRefresh?: boolean; traceId?: string }) => Promise<{
       success: boolean
       error?: string
     }>

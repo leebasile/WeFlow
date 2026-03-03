@@ -73,6 +73,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
     debug: (data: any) => ipcRenderer.send('log:debug', data)
   },
 
+  diagnostics: {
+    getExportCardLogs: (options?: { limit?: number }) =>
+      ipcRenderer.invoke('diagnostics:getExportCardLogs', options),
+    clearExportCardLogs: () =>
+      ipcRenderer.invoke('diagnostics:clearExportCardLogs'),
+    exportExportCardLogs: (payload: { filePath: string; frontendLogs?: unknown[] }) =>
+      ipcRenderer.invoke('diagnostics:exportExportCardLogs', payload)
+  },
+
   // 窗口控制
   window: {
     minimize: () => ipcRenderer.send('window:minimize'),

@@ -21,6 +21,7 @@ import { videoService } from './services/videoService'
 import { snsService, isVideoUrl } from './services/snsService'
 import { contactExportService } from './services/contactExportService'
 import { windowsHelloService } from './services/windowsHelloService'
+import { exportCardDiagnosticsService } from './services/exportCardDiagnosticsService'
 
 import { registerNotificationHandlers, showNotification } from './windows/notificationWindow'
 import { httpService } from './services/httpService'
@@ -707,6 +708,26 @@ function registerIpcHandlers() {
     }
   })
 
+  ipcMain.handle('diagnostics:getExportCardLogs', async (_, options?: { limit?: number }) => {
+    return exportCardDiagnosticsService.snapshot(options?.limit)
+  })
+
+  ipcMain.handle('diagnostics:clearExportCardLogs', async () => {
+    exportCardDiagnosticsService.clear()
+    return { success: true }
+  })
+
+  ipcMain.handle('diagnostics:exportExportCardLogs', async (_, payload?: {
+    filePath?: string
+    frontendLogs?: unknown[]
+  }) => {
+    const filePath = typeof payload?.filePath === 'string' ? payload.filePath.trim() : ''
+    if (!filePath) {
+      return { success: false, error: '导出路径不能为空' }
+    }
+    return exportCardDiagnosticsService.exportCombinedLogs(filePath, payload?.frontendLogs || [])
+  })
+
   ipcMain.handle('app:checkForUpdates', async () => {
     if (!AUTO_UPDATE_ENABLED) {
       return { hasUpdate: false }
@@ -973,14 +994,108 @@ function registerIpcHandlers() {
   ipcMain.handle('chat:getExportContentSessionCounts', async (_, options?: {
     triggerRefresh?: boolean
     forceRefresh?: boolean
+    traceId?: string
   }) => {
-    return chatService.getExportContentSessionCounts(options)
+    const traceId = typeof options?.traceId === 'string' ? options.traceId.trim() : ''
+    const startedAt = Date.now()
+    if (traceId) {
+      exportCardDiagnosticsService.stepStart({
+        traceId,
+        stepId: 'main-ipc-export-content-counts',
+        stepName: 'Main IPC: chat:getExportContentSessionCounts',
+        source: 'main',
+        message: '主进程收到导出卡片统计请求',
+        data: {
+          forceRefresh: options?.forceRefresh === true,
+          triggerRefresh: options?.triggerRefresh !== false
+        }
+      })
+    }
+
+    try {
+      const result = await chatService.getExportContentSessionCounts(options)
+      if (traceId) {
+        exportCardDiagnosticsService.stepEnd({
+          traceId,
+          stepId: 'main-ipc-export-content-counts',
+          stepName: 'Main IPC: chat:getExportContentSessionCounts',
+          source: 'main',
+          status: result?.success ? 'done' : 'failed',
+          durationMs: Date.now() - startedAt,
+          message: result?.success ? '主进程统计请求完成' : '主进程统计请求失败',
+          data: result?.success
+            ? {
+                totalSessions: result?.data?.totalSessions || 0,
+                pendingMediaSessions: result?.data?.pendingMediaSessions || 0,
+                refreshing: result?.data?.refreshing === true
+              }
+            : { error: result?.error || '未知错误' }
+        })
+      }
+      return result
+    } catch (error) {
+      if (traceId) {
+        exportCardDiagnosticsService.stepEnd({
+          traceId,
+          stepId: 'main-ipc-export-content-counts',
+          stepName: 'Main IPC: chat:getExportContentSessionCounts',
+          source: 'main',
+          status: 'failed',
+          durationMs: Date.now() - startedAt,
+          message: '主进程统计请求抛出异常',
+          data: { error: String(error) }
+        })
+      }
+      throw error
+    }
   })
 
   ipcMain.handle('chat:refreshExportContentSessionCounts', async (_, options?: {
     forceRefresh?: boolean
+    traceId?: string
   }) => {
-    return chatService.refreshExportContentSessionCounts(options)
+    const traceId = typeof options?.traceId === 'string' ? options.traceId.trim() : ''
+    const startedAt = Date.now()
+    if (traceId) {
+      exportCardDiagnosticsService.stepStart({
+        traceId,
+        stepId: 'main-ipc-refresh-export-content-counts',
+        stepName: 'Main IPC: chat:refreshExportContentSessionCounts',
+        source: 'main',
+        message: '主进程收到刷新导出卡片统计请求',
+        data: { forceRefresh: options?.forceRefresh === true }
+      })
+    }
+    try {
+      const result = await chatService.refreshExportContentSessionCounts(options)
+      if (traceId) {
+        exportCardDiagnosticsService.stepEnd({
+          traceId,
+          stepId: 'main-ipc-refresh-export-content-counts',
+          stepName: 'Main IPC: chat:refreshExportContentSessionCounts',
+          source: 'main',
+          status: result?.success ? 'done' : 'failed',
+          durationMs: Date.now() - startedAt,
+          message: result?.success ? '主进程刷新请求完成' : '主进程刷新请求失败',
+          data: result?.success ? undefined : { error: result?.error || '未知错误' }
+        })
+      }
+      return result
+    } catch (error) {
+      if (traceId) {
+        exportCardDiagnosticsService.stepEnd({
+          traceId,
+          stepId: 'main-ipc-refresh-export-content-counts',
+          stepName: 'Main IPC: chat:refreshExportContentSessionCounts',
+          source: 'main',
+          status: 'failed',
+          durationMs: Date.now() - startedAt,
+          message: '主进程刷新请求抛出异常',
+          data: { error: String(error) }
+        })
+      }
+      throw error
+    }
   })
 
   ipcMain.handle('chat:enrichSessionsContactInfo', async (_, usernames: string[]) => {

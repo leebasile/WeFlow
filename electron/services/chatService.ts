@@ -19,6 +19,7 @@ import {
   ExportContentSessionStatsEntry,
   ExportContentStatsCacheService
 } from './exportContentStatsCacheService'
+import { exportCardDiagnosticsService } from './exportCardDiagnosticsService'
 import { voiceTranscribeService } from './voiceTranscribeService'
 import { LRUCache } from '../utils/LRUCache.js'
 
@@ -908,15 +909,32 @@ class ChatService {
    */
   async getSessionMessageCounts(
     sessionIds: string[],
-    options?: { preferHintCache?: boolean; bypassSessionCache?: boolean }
+    options?: { preferHintCache?: boolean; bypassSessionCache?: boolean; traceId?: string }
   ): Promise<{
     success: boolean
     counts?: Record<string, number>
     error?: string
   }> {
+    const traceId = this.normalizeExportDiagTraceId(options?.traceId)
+    const stepStartedAt = this.startExportDiagStep({
+      traceId,
+      stepId: 'backend-get-session-message-counts',
+      stepName: 'ChatService.getSessionMessageCounts',
+      message: '开始批量读取会话消息总数',
+      data: {
+        requestedSessions: Array.isArray(sessionIds) ? sessionIds.length : 0,
+        preferHintCache: options?.preferHintCache !== false,
+        bypassSessionCache: options?.bypassSessionCache === true
+      }
+    })
+    let success = false
+    let errorMessage = ''
+    let returnedCounts = 0
+
     try {
       const connectResult = await this.ensureConnected()
       if (!connectResult.success) {
+        errorMessage = connectResult.error || '数据库未连接'
         return { success: false, error: connectResult.error || '数据库未连接' }
       }
 
@@ -928,6 +946,7 @@ class ChatService {
         )
       )
       if (normalizedSessionIds.length === 0) {
+        success = true
         return { success: true, counts: {} }
       }
 
@@ -966,6 +985,18 @@ class ChatService {
       const batchSize = 320
       for (let i = 0; i < pendingSessionIds.length; i += batchSize) {
         const batch = pendingSessionIds.slice(i, i + batchSize)
+        this.logExportDiag({
+          traceId,
+          level: 'debug',
+          source: 'backend',
+          stepId: 'backend-get-session-message-counts-batch',
+          stepName: '会话消息总数批次查询',
+          status: 'running',
+          message: `开始查询批次 ${Math.floor(i / batchSize) + 1}/${Math.ceil(pendingSessionIds.length / batchSize) || 1}`,
+          data: {
+            batchSize: batch.length
+          }
+        })
         let batchCounts: Record<string, number> = {}
         try {
           const result = await wcdbService.getMessageCounts(batch)
@@ -988,10 +1019,23 @@ class ChatService {
         }
       }
 
+      returnedCounts = Object.keys(counts).length
+      success = true
       return { success: true, counts }
     } catch (e) {
       console.error('ChatService: 批量获取会话消息总数失败:', e)
+      errorMessage = String(e)
       return { success: false, error: String(e) }
+    } finally {
+      this.endExportDiagStep({
+        traceId,
+        stepId: 'backend-get-session-message-counts',
+        stepName: 'ChatService.getSessionMessageCounts',
+        startedAt: stepStartedAt,
+        success,
+        message: success ? '批量会话消息总数读取完成' : '批量会话消息总数读取失败',
+        data: success ? { returnedCounts } : { error: errorMessage || '未知错误' }
+      })
     }
   }
 
@@ -1628,6 +1672,82 @@ class ChatService {
     await Promise.all(runners)
   }
 
+  private normalizeExportDiagTraceId(traceId?: string): string {
+    const normalized = String(traceId || '').trim()
+    return normalized
+  }
+
+  private logExportDiag(input: {
+    traceId?: string
+    source?: 'backend' | 'main' | 'frontend' | 'worker'
+    level?: 'debug' | 'info' | 'warn' | 'error'
+    message: string
+    stepId?: string
+    stepName?: string
+    status?: 'running' | 'done' | 'failed' | 'timeout'
+    durationMs?: number
+    data?: Record<string, unknown>
+  }): void {
+    const traceId = this.normalizeExportDiagTraceId(input.traceId)
+    if (!traceId) return
+    exportCardDiagnosticsService.log({
+      traceId,
+      source: input.source || 'backend',
+      level: input.level || 'info',
+      message: input.message,
+      stepId: input.stepId,
+      stepName: input.stepName,
+      status: input.status,
+      durationMs: input.durationMs,
+      data: input.data
+    })
+  }
+
+  private startExportDiagStep(input: {
+    traceId?: string
+    stepId: string
+    stepName: string
+    message: string
+    data?: Record<string, unknown>
+  }): number {
+    const startedAt = Date.now()
+    const traceId = this.normalizeExportDiagTraceId(input.traceId)
+    if (traceId) {
+      exportCardDiagnosticsService.stepStart({
+        traceId,
+        stepId: input.stepId,
+        stepName: input.stepName,
+        source: 'backend',
+        message: input.message,
+        data: input.data
+      })
+    }
+    return startedAt
+  }
+
+  private endExportDiagStep(input: {
+    traceId?: string
+    stepId: string
+    stepName: string
+    startedAt: number
+    success: boolean
+    message?: string
+    data?: Record<string, unknown>
+  }): void {
+    const traceId = this.normalizeExportDiagTraceId(input.traceId)
+    if (!traceId) return
+    exportCardDiagnosticsService.stepEnd({
+      traceId,
+      stepId: input.stepId,
+      stepName: input.stepName,
+      source: 'backend',
+      status: input.success ? 'done' : 'failed',
+      message: input.message || (input.success ? `${input.stepName} 完成` : `${input.stepName} 失败`),
+      durationMs: Math.max(0, Date.now() - input.startedAt),
+      data: input.data
+    })
+  }
+
   private refreshSessionMessageCountCacheScope(): void {
     const dbPath = String(this.configService.get('dbPath') || '')
     const myWxid = String(this.configService.get('myWxid') || '')
@@ -1688,35 +1808,75 @@ class ChatService {
     this.exportContentStatsCacheService.setScope(this.exportContentStatsScope, scopeEntry)
   }
 
-  private async listExportContentScopeSessionIds(force = false): Promise<string[]> {
+  private async listExportContentScopeSessionIds(force = false, traceId?: string): Promise<string[]> {
+    const stepStartedAt = this.startExportDiagStep({
+      traceId,
+      stepId: 'backend-list-export-content-session-ids',
+      stepName: '列出导出内容会话范围',
+      message: '开始获取导出内容统计范围会话',
+      data: { force }
+    })
+    let success = false
+    let loadedCount = 0
+    let errorMessage = ''
+
     const now = Date.now()
     if (
       !force &&
       this.exportContentScopeSessionIdsCache &&
       now - this.exportContentScopeSessionIdsCache.updatedAt <= this.exportContentScopeSessionIdsCacheTtlMs
     ) {
+      success = true
+      loadedCount = this.exportContentScopeSessionIdsCache.ids.length
+      this.endExportDiagStep({
+        traceId,
+        stepId: 'backend-list-export-content-session-ids',
+        stepName: '列出导出内容会话范围',
+        startedAt: stepStartedAt,
+        success,
+        message: '命中会话范围缓存',
+        data: { count: loadedCount, fromCache: true }
+      })
       return this.exportContentScopeSessionIdsCache.ids
     }
 
-    const sessionsResult = await this.getSessions()
-    if (!sessionsResult.success || !sessionsResult.sessions) {
-      return []
-    }
+    try {
+      const sessionsResult = await this.getSessions()
+      if (!sessionsResult.success || !sessionsResult.sessions) {
+        errorMessage = sessionsResult.error || '获取会话失败'
+        return []
+      }
 
-    const ids = Array.from(
-      new Set(
-        sessionsResult.sessions
-          .map((session) => String(session.username || '').trim())
-          .filter(Boolean)
-          .filter((sessionId) => sessionId.endsWith('@chatroom') || !sessionId.startsWith('gh_'))
+      const ids = Array.from(
+        new Set(
+          sessionsResult.sessions
+            .map((session) => String(session.username || '').trim())
+            .filter(Boolean)
+            .filter((sessionId) => sessionId.endsWith('@chatroom') || !sessionId.startsWith('gh_'))
+        )
       )
-    )
 
-    this.exportContentScopeSessionIdsCache = {
-      ids,
-      updatedAt: now
+      this.exportContentScopeSessionIdsCache = {
+        ids,
+        updatedAt: now
+      }
+      success = true
+      loadedCount = ids.length
+      return ids
+    } catch (error) {
+      errorMessage = String(error)
+      return []
+    } finally {
+      this.endExportDiagStep({
+        traceId,
+        stepId: 'backend-list-export-content-session-ids',
+        stepName: '列出导出内容会话范围',
+        startedAt: stepStartedAt,
+        success,
+        message: success ? '导出内容会话范围获取完成' : '导出内容会话范围获取失败',
+        data: success ? { count: loadedCount, fromCache: false } : { error: errorMessage || '未知错误' }
+      })
     }
-    return ids
   }
 
   private createDefaultExportContentEntry(): ExportContentSessionStatsEntry {
@@ -1735,10 +1895,28 @@ class ChatService {
     return this.exportContentStatsDirtySessionIds.has(sessionId)
   }
 
-  private async collectExportContentEntry(sessionId: string): Promise<ExportContentSessionStatsEntry> {
+  private async collectExportContentEntry(sessionId: string, traceId?: string): Promise<ExportContentSessionStatsEntry> {
+    const stepStartedAt = this.startExportDiagStep({
+      traceId,
+      stepId: 'backend-collect-export-content-entry',
+      stepName: '扫描单会话内容类型',
+      message: '开始扫描会话内容类型',
+      data: { sessionId }
+    })
+    let fallback = false
     const entry = this.createDefaultExportContentEntry()
     const cursorResult = await wcdbService.openMessageCursorLite(sessionId, 400, false, 0, 0)
     if (!cursorResult.success || !cursorResult.cursor) {
+      fallback = true
+      this.endExportDiagStep({
+        traceId,
+        stepId: 'backend-collect-export-content-entry',
+        stepName: '扫描单会话内容类型',
+        startedAt: stepStartedAt,
+        success: false,
+        message: '会话内容扫描失败，游标未创建',
+        data: { sessionId, error: cursorResult.error || 'openMessageCursorLite failed' }
+      })
       return {
         ...entry,
         updatedAt: Date.now(),
@@ -1748,53 +1926,111 @@ class ChatService {
 
     const cursor = cursorResult.cursor
     try {
-      let done = false
-      while (!done) {
-        const batch = await wcdbService.fetchMessageBatch(cursor)
-        if (!batch.success) {
-          break
-        }
-        const rows = Array.isArray(batch.rows) ? batch.rows as Record<string, any>[] : []
-        for (const row of rows) {
-          entry.hasAny = true
-          const localType = this.getRowInt(
-            row,
-            ['local_type', 'localType', 'type', 'msg_type', 'msgType', 'WCDB_CT_local_type'],
-            1
-          )
-          if (localType === 34) entry.hasVoice = true
-          if (localType === 3) entry.hasImage = true
-          if (localType === 43) entry.hasVideo = true
-          if (localType === 47) entry.hasEmoji = true
+      try {
+        let done = false
+        while (!done) {
+          const batch = await wcdbService.fetchMessageBatch(cursor)
+          if (!batch.success) {
+            break
+          }
+          const rows = Array.isArray(batch.rows) ? batch.rows as Record<string, any>[] : []
+          for (const row of rows) {
+            entry.hasAny = true
+            const localType = this.getRowInt(
+              row,
+              ['local_type', 'localType', 'type', 'msg_type', 'msgType', 'WCDB_CT_local_type'],
+              1
+            )
+            if (localType === 34) entry.hasVoice = true
+            if (localType === 3) entry.hasImage = true
+            if (localType === 43) entry.hasVideo = true
+            if (localType === 47) entry.hasEmoji = true
 
-          if (entry.hasVoice && entry.hasImage && entry.hasVideo && entry.hasEmoji) {
-            done = true
+            if (entry.hasVoice && entry.hasImage && entry.hasVideo && entry.hasEmoji) {
+              done = true
+              break
+            }
+          }
+
+          if (!batch.hasMore || rows.length === 0) {
             break
           }
         }
-
-        if (!batch.hasMore || rows.length === 0) {
-          break
-        }
+      } catch (error) {
+        this.endExportDiagStep({
+          traceId,
+          stepId: 'backend-collect-export-content-entry',
+          stepName: '扫描单会话内容类型',
+          startedAt: stepStartedAt,
+          success: false,
+          message: '会话内容扫描异常',
+          data: { sessionId, error: String(error) }
+        })
+        throw error
       }
+
+      entry.mediaReady = true
+      entry.updatedAt = Date.now()
+      if (!fallback) {
+        this.endExportDiagStep({
+          traceId,
+          stepId: 'backend-collect-export-content-entry',
+          stepName: '扫描单会话内容类型',
+          startedAt: stepStartedAt,
+          success: true,
+          message: '会话内容扫描完成',
+          data: {
+            sessionId,
+            hasAny: entry.hasAny,
+            hasVoice: entry.hasVoice,
+            hasImage: entry.hasImage,
+            hasVideo: entry.hasVideo,
+            hasEmoji: entry.hasEmoji
+          }
+        })
+      }
+      return entry
     } finally {
       await wcdbService.closeMessageCursor(cursor)
     }
-
-    entry.mediaReady = true
-    entry.updatedAt = Date.now()
-    return entry
   }
 
-  private async startExportContentStatsRefresh(force = false): Promise<void> {
+  private async startExportContentStatsRefresh(force = false, traceId?: string): Promise<void> {
+    const refreshStartedAt = this.startExportDiagStep({
+      traceId,
+      stepId: 'backend-refresh-export-content-stats',
+      stepName: '后台刷新导出内容统计',
+      message: '开始后台刷新导出内容会话统计',
+      data: { force }
+    })
+
     if (this.exportContentStatsRefreshPromise) {
       this.exportContentStatsRefreshQueued = true
       this.exportContentStatsRefreshForceQueued = this.exportContentStatsRefreshForceQueued || force
+      this.logExportDiag({
+        traceId,
+        level: 'debug',
+        source: 'backend',
+        message: '已有刷新任务在执行，已加入队列',
+        stepId: 'backend-refresh-export-content-stats',
+        stepName: '后台刷新导出内容统计',
+        status: 'running',
+        data: { forceQueued: this.exportContentStatsRefreshForceQueued }
+      })
+      this.endExportDiagStep({
+        traceId,
+        stepId: 'backend-refresh-export-content-stats',
+        stepName: '后台刷新导出内容统计',
+        startedAt: refreshStartedAt,
+        success: true,
+        message: '复用进行中的后台刷新任务',
+        data: { queued: true, forceQueued: this.exportContentStatsRefreshForceQueued }
+      })
       return this.exportContentStatsRefreshPromise
     }
 
     const task = (async () => {
-      const sessionIds = await this.listExportContentScopeSessionIds(force)
+      const sessionIds = await this.listExportContentScopeSessionIds(force, traceId)
       const sessionIdSet = new Set(sessionIds)
       const targets: string[] = []
 
@@ -1806,9 +2042,22 @@ class ChatService {
       }
 
       if (targets.length > 0) {
+        this.logExportDiag({
+          traceId,
+          source: 'backend',
+          level: 'info',
+          message: '准备刷新导出内容会话统计目标',
+          stepId: 'backend-refresh-export-content-stats',
+          stepName: '后台刷新导出内容统计',
+          status: 'running',
+          data: {
+            totalSessions: sessionIds.length,
+            targetSessions: targets.length
+          }
+        })
         await this.forEachWithConcurrency(targets, 3, async (sessionId) => {
           try {
-            const nextEntry = await this.collectExportContentEntry(sessionId)
+            const nextEntry = await this.collectExportContentEntry(sessionId, traceId)
             this.exportContentStatsMemory.set(sessionId, nextEntry)
             if (nextEntry.mediaReady) {
               this.exportContentStatsDirtySessionIds.delete(sessionId)
@@ -1836,13 +2085,35 @@ class ChatService {
     this.exportContentStatsRefreshPromise = task
     try {
       await task
+      this.endExportDiagStep({
+        traceId,
+        stepId: 'backend-refresh-export-content-stats',
+        stepName: '后台刷新导出内容统计',
+        startedAt: refreshStartedAt,
+        success: true,
+        message: '后台刷新导出内容统计完成',
+        data: {
+          force
+        }
+      })
+    } catch (error) {
+      this.endExportDiagStep({
+        traceId,
+        stepId: 'backend-refresh-export-content-stats',
+        stepName: '后台刷新导出内容统计',
+        startedAt: refreshStartedAt,
+        success: false,
+        message: '后台刷新导出内容统计失败',
+        data: { error: String(error) }
+      })
+      throw error
     } finally {
       this.exportContentStatsRefreshPromise = null
       if (this.exportContentStatsRefreshQueued) {
         const rerunForce = this.exportContentStatsRefreshForceQueued
         this.exportContentStatsRefreshQueued = false
         this.exportContentStatsRefreshForceQueued = false
-        void this.startExportContentStatsRefresh(rerunForce)
+        void this.startExportContentStatsRefresh(rerunForce, traceId)
       }
     }
   }
@@ -1850,17 +2121,34 @@ class ChatService {
   async getExportContentSessionCounts(options?: {
     triggerRefresh?: boolean
     forceRefresh?: boolean
+    traceId?: string
   }): Promise<{ success: boolean; data?: ExportContentSessionCounts; error?: string }> {
+    const traceId = this.normalizeExportDiagTraceId(options?.traceId)
+    const stepStartedAt = this.startExportDiagStep({
+      traceId,
+      stepId: 'backend-get-export-content-session-counts',
+      stepName: '获取导出卡片统计',
+      message: '开始计算导出卡片统计',
+      data: {
+        triggerRefresh: options?.triggerRefresh !== false,
+        forceRefresh: options?.forceRefresh === true
+      }
+    })
+    let stepSuccess = false
+    let stepError = ''
+    let stepResult: ExportContentSessionCounts | undefined
+
     try {
       const connectResult = await this.ensureConnected()
       if (!connectResult.success) {
+        stepError = connectResult.error || '数据库未连接'
         return { success: false, error: connectResult.error || '数据库未连接' }
       }
       this.refreshSessionMessageCountCacheScope()
 
       const forceRefresh = options?.forceRefresh === true
       const triggerRefresh = options?.triggerRefresh !== false
-      const sessionIds = await this.listExportContentScopeSessionIds(forceRefresh)
+      const sessionIds = await this.listExportContentScopeSessionIds(forceRefresh, traceId)
       const sessionIdSet = new Set(sessionIds)
 
       for (const sessionId of Array.from(this.exportContentStatsMemory.keys())) {
@@ -1906,10 +2194,34 @@ class ChatService {
       }
 
       if (missingTextCountSessionIds.length > 0) {
+        const textCountStepStartedAt = this.startExportDiagStep({
+          traceId,
+          stepId: 'backend-fill-text-counts',
+          stepName: '补全文本会话计数',
+          message: '开始补全文本会话计数',
+          data: { missingSessions: missingTextCountSessionIds.length }
+        })
+        const textCountStallTimer = setTimeout(() => {
+          this.logExportDiag({
+            traceId,
+            source: 'backend',
+            level: 'warn',
+            message: '补全文本会话计数耗时较长',
+            stepId: 'backend-fill-text-counts',
+            stepName: '补全文本会话计数',
+            status: 'running',
+            data: {
+              elapsedMs: Date.now() - textCountStepStartedAt,
+              missingSessions: missingTextCountSessionIds.length
+            }
+          })
+        }, 3000)
         const textCountResult = await this.getSessionMessageCounts(missingTextCountSessionIds, {
           preferHintCache: false,
-          bypassSessionCache: true
+          bypassSessionCache: true,
+          traceId
         })
+        clearTimeout(textCountStallTimer)
         if (textCountResult.success && textCountResult.counts) {
           const now = Date.now()
           for (const sessionId of missingTextCountSessionIds) {
@@ -1927,47 +2239,109 @@ class ChatService {
             }
           }
           this.persistExportContentStatsScope(sessionIdSet)
+          this.endExportDiagStep({
+            traceId,
+            stepId: 'backend-fill-text-counts',
+            stepName: '补全文本会话计数',
+            startedAt: textCountStepStartedAt,
+            success: true,
+            message: '文本会话计数补全完成',
+            data: { updatedSessions: missingTextCountSessionIds.length }
+          })
+        } else {
+          this.endExportDiagStep({
+            traceId,
+            stepId: 'backend-fill-text-counts',
+            stepName: '补全文本会话计数',
+            startedAt: textCountStepStartedAt,
+            success: false,
+            message: '文本会话计数补全失败',
+            data: { error: textCountResult.error || '未知错误' }
+          })
         }
       }
 
       if (forceRefresh && triggerRefresh) {
-        void this.startExportContentStatsRefresh(true)
+        void this.startExportContentStatsRefresh(true, traceId)
       } else if (triggerRefresh && (pendingMediaSessionSet.size > 0 || this.exportContentStatsDirtySessionIds.size > 0)) {
-        void this.startExportContentStatsRefresh(false)
+        void this.startExportContentStatsRefresh(false, traceId)
       }
 
+      stepResult = {
+        totalSessions: sessionIds.length,
+        textSessions,
+        voiceSessions,
+        imageSessions,
+        videoSessions,
+        emojiSessions,
+        pendingMediaSessions: pendingMediaSessionSet.size,
+        updatedAt: this.exportContentStatsScopeUpdatedAt,
+        refreshing: this.exportContentStatsRefreshPromise !== null
+      }
+      stepSuccess = true
       return {
         success: true,
-        data: {
-          totalSessions: sessionIds.length,
-          textSessions,
-          voiceSessions,
-          imageSessions,
-          videoSessions,
-          emojiSessions,
-          pendingMediaSessions: pendingMediaSessionSet.size,
-          updatedAt: this.exportContentStatsScopeUpdatedAt,
-          refreshing: this.exportContentStatsRefreshPromise !== null
-        }
+        data: stepResult
       }
     } catch (e) {
       console.error('ChatService: 获取导出内容会话统计失败:', e)
+      stepError = String(e)
       return { success: false, error: String(e) }
+    } finally {
+      this.endExportDiagStep({
+        traceId,
+        stepId: 'backend-get-export-content-session-counts',
+        stepName: '获取导出卡片统计',
+        startedAt: stepStartedAt,
+        success: stepSuccess,
+        message: stepSuccess ? '导出卡片统计计算完成' : '导出卡片统计计算失败',
+        data: stepSuccess
+          ? {
+              totalSessions: stepResult?.totalSessions || 0,
+              pendingMediaSessions: stepResult?.pendingMediaSessions || 0,
+              refreshing: stepResult?.refreshing === true
+            }
+          : { error: stepError || '未知错误' }
+      })
     }
   }
 
-  async refreshExportContentSessionCounts(options?: { forceRefresh?: boolean }): Promise<{ success: boolean; error?: string }> {
+  async refreshExportContentSessionCounts(options?: { forceRefresh?: boolean; traceId?: string }): Promise<{ success: boolean; error?: string }> {
+    const traceId = this.normalizeExportDiagTraceId(options?.traceId)
+    const stepStartedAt = this.startExportDiagStep({
+      traceId,
+      stepId: 'backend-refresh-export-content-session-counts',
+      stepName: '刷新导出卡片统计',
+      message: '开始刷新导出卡片统计',
+      data: { forceRefresh: options?.forceRefresh === true }
+    })
+    let stepSuccess = false
+    let stepError = ''
+
     try {
       const connectResult = await this.ensureConnected()
       if (!connectResult.success) {
+        stepError = connectResult.error || '数据库未连接'
         return { success: false, error: connectResult.error || '数据库未连接' }
       }
       this.refreshSessionMessageCountCacheScope()
-      await this.startExportContentStatsRefresh(options?.forceRefresh === true)
+      await this.startExportContentStatsRefresh(options?.forceRefresh === true, traceId)
+      stepSuccess = true
       return { success: true }
     } catch (e) {
       console.error('ChatService: 刷新导出内容会话统计失败:', e)
+      stepError = String(e)
       return { success: false, error: String(e) }
+    } finally {
+      this.endExportDiagStep({
+        traceId,
+        stepId: 'backend-refresh-export-content-session-counts',
+        stepName: '刷新导出卡片统计',
+        startedAt: stepStartedAt,
+        success: stepSuccess,
+        message: stepSuccess ? '刷新导出卡片统计完成' : '刷新导出卡片统计失败',
+        data: stepSuccess ? undefined : { error: stepError || '未知错误' }
+      })
     }
   }
 
