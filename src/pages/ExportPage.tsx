@@ -969,8 +969,6 @@ function ExportPage() {
   const contactsUpdatedAtRef = useRef<number | null>(null)
   const sessionsHydratedAtRef = useRef(0)
   const snsStatsHydratedAtRef = useRef(0)
-  const filteredContactUsernamesRef = useRef<string[]>([])
-  const visibleContactUsernamesRef = useRef<string[]>([])
   const inProgressSessionIdsRef = useRef<string[]>([])
   const activeTaskCountRef = useRef(0)
   const hasBaseConfigReadyRef = useRef(false)
@@ -1528,7 +1526,8 @@ function ExportPage() {
 
   const loadSessionContentStats = useCallback(async (
     sourceSessions: SessionRow[],
-    priorityTab: ConversationTab
+    priorityTab: ConversationTab,
+    resolvedMessageCounts?: Record<string, number>
   ) => {
     const requestId = sessionContentStatsRequestIdRef.current + 1
     sessionContentStatsRequestIdRef.current = requestId
@@ -1541,25 +1540,36 @@ function ExportPage() {
       return
     }
 
-    const exportableSessionIdSet = new Set(exportableSessions.map(session => session.username))
-    const visiblePrioritySessionIds = visibleContactUsernamesRef.current
-      .filter((sessionId) => exportableSessionIdSet.has(sessionId))
-    const firstScreenPrioritySessionIds = filteredContactUsernamesRef.current
-      .filter((sessionId) => exportableSessionIdSet.has(sessionId))
-      .slice(0, EXPORT_CONTENT_STATS_FIRST_SCREEN_LIMIT)
-    const prioritizedSessionIds = exportableSessions
+    const readCount = (session: SessionRow): number | undefined => {
+      const resolved = normalizeMessageCount(resolvedMessageCounts?.[session.username])
+      if (typeof resolved === 'number') return resolved
+      const hinted = normalizeMessageCount(session.messageCountHint)
+      if (typeof hinted === 'number') return hinted
+      return undefined
+    }
+
+    const sortByMessageCountDesc = (a: SessionRow, b: SessionRow): number => {
+      const aCount = readCount(a)
+      const bCount = readCount(b)
+      const aHas = typeof aCount === 'number'
+      const bHas = typeof bCount === 'number'
+      if (aHas && bHas && aCount !== bCount) {
+        return (bCount as number) - (aCount as number)
+      }
+      if (aHas && !bHas) return -1
+      if (!aHas && bHas) return 1
+      const tsDiff = (b.sortTimestamp || b.lastTimestamp || 0) - (a.sortTimestamp || a.lastTimestamp || 0)
+      if (tsDiff !== 0) return tsDiff
+      return (a.displayName || a.username).localeCompare(b.displayName || b.username, 'zh-Hans-CN')
+    }
+
+    const currentTabSessions = exportableSessions
       .filter(session => session.kind === priorityTab)
-      .map(session => session.username)
-    const prioritizedSet = new Set(prioritizedSessionIds)
-    const remainingSessionIds = exportableSessions
-      .filter(session => !prioritizedSet.has(session.username))
-      .map(session => session.username)
-    const orderedSessionIds = Array.from(new Set([
-      ...visiblePrioritySessionIds,
-      ...firstScreenPrioritySessionIds,
-      ...prioritizedSessionIds,
-      ...remainingSessionIds
-    ]))
+      .sort(sortByMessageCountDesc)
+    const otherSessions = exportableSessions
+      .filter(session => session.kind !== priorityTab)
+      .sort(sortByMessageCountDesc)
+    const orderedSessionIds = [...currentTabSessions, ...otherSessions].map(session => session.username)
 
     if (orderedSessionIds.length === 0) {
       setIsLoadingSessionContentStats(false)
@@ -1597,10 +1607,7 @@ function ExportPage() {
     setIsLoadingSessionContentStats(true)
     setSessionContentStatsProgress({ completed: 0, total })
     try {
-      const immediateSessionIds = Array.from(new Set([
-        ...visiblePrioritySessionIds,
-        ...firstScreenPrioritySessionIds
-      ])).slice(0, EXPORT_CONTENT_STATS_FIRST_SCREEN_LIMIT)
+      const immediateSessionIds = orderedSessionIds.slice(0, EXPORT_CONTENT_STATS_FIRST_SCREEN_LIMIT)
 
       for (let i = 0; i < immediateSessionIds.length; i += EXPORT_CONTENT_STATS_CHUNK_SIZE) {
         const chunk = immediateSessionIds.slice(i, i + EXPORT_CONTENT_STATS_CHUNK_SIZE)
@@ -1640,7 +1647,7 @@ function ExportPage() {
   const loadSessionMessageCounts = useCallback(async (
     sourceSessions: SessionRow[],
     priorityTab: ConversationTab
-  ) => {
+  ): Promise<Record<string, number>> => {
     const requestId = sessionCountRequestIdRef.current + 1
     sessionCountRequestIdRef.current = requestId
     const isStale = () => sessionCountRequestIdRef.current !== requestId
@@ -1653,6 +1660,7 @@ function ExportPage() {
       }
       return acc
     }, {})
+    const accumulatedCounts: Record<string, number> = { ...seededHintCounts }
     setSessionMessageCounts(seededHintCounts)
     if (Object.keys(seededHintCounts).length > 0) {
       mergeSessionContentMetrics(
@@ -1665,7 +1673,7 @@ function ExportPage() {
 
     if (exportableSessions.length === 0) {
       setIsLoadingSessionCounts(false)
-      return
+      return { ...accumulatedCounts }
     }
 
     const prioritizedSessionIds = exportableSessions
@@ -1686,6 +1694,9 @@ function ExportPage() {
         return acc
       }, {})
       if (Object.keys(normalized).length === 0) return
+      for (const [sessionId, count] of Object.entries(normalized)) {
+        accumulatedCounts[sessionId] = count
+      }
       setSessionMessageCounts(prev => ({ ...prev, ...normalized }))
       mergeSessionContentMetrics(
         Object.entries(normalized).reduce<Record<string, SessionContentMetric>>((acc, [sessionId, count]) => {
@@ -1699,7 +1710,7 @@ function ExportPage() {
     try {
       if (prioritizedSessionIds.length > 0) {
         const priorityResult = await window.electronAPI.chat.getSessionMessageCounts(prioritizedSessionIds)
-        if (isStale()) return
+        if (isStale()) return { ...accumulatedCounts }
         if (priorityResult.success) {
           applyCounts(priorityResult.counts)
         }
@@ -1707,7 +1718,7 @@ function ExportPage() {
 
       if (remainingSessionIds.length > 0) {
         const remainingResult = await window.electronAPI.chat.getSessionMessageCounts(remainingSessionIds)
-        if (isStale()) return
+        if (isStale()) return { ...accumulatedCounts }
         if (remainingResult.success) {
           applyCounts(remainingResult.counts)
         }
@@ -1719,6 +1730,7 @@ function ExportPage() {
         setIsLoadingSessionCounts(false)
       }
     }
+    return { ...accumulatedCounts }
   }, [mergeSessionContentMetrics])
 
   const loadSessions = useCallback(async () => {
@@ -1777,9 +1789,9 @@ function ExportPage() {
         setSessions(baseSessions)
         sessionsHydratedAtRef.current = Date.now()
         void (async () => {
-          await loadSessionMessageCounts(baseSessions, activeTabRef.current)
+          const resolvedMessageCounts = await loadSessionMessageCounts(baseSessions, activeTabRef.current)
           if (isStale()) return
-          await loadSessionContentStats(baseSessions, activeTabRef.current)
+          await loadSessionContentStats(baseSessions, activeTabRef.current, resolvedMessageCounts)
         })()
         setSessionDataSource(cachedContacts.length > 0 ? 'cache' : 'network')
         if (cachedContacts.length === 0) {
@@ -3496,14 +3508,6 @@ function ExportPage() {
   const visibleContacts = useMemo(() => {
     return filteredContacts.slice(contactStartIndex, contactEndIndex)
   }, [filteredContacts, contactStartIndex, contactEndIndex])
-
-  useEffect(() => {
-    filteredContactUsernamesRef.current = filteredContacts.map(contact => contact.username)
-  }, [filteredContacts])
-
-  useEffect(() => {
-    visibleContactUsernamesRef.current = visibleContacts.map(contact => contact.username)
-  }, [visibleContacts])
 
   const onContactsListScroll = useCallback((event: UIEvent<HTMLDivElement>) => {
     setContactsListScrollTop(event.currentTarget.scrollTop)
