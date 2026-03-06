@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
-import { Search, MessageSquare, AlertCircle, Loader2, RefreshCw, X, ChevronDown, ChevronLeft, Info, Calendar, Database, Hash, Play, Pause, Image as ImageIcon, Link, Mic, CheckCircle, Copy, Check, CheckSquare, Download, BarChart3, Edit2, Trash2, BellOff, Users, FolderClosed, UserCheck, Crown } from 'lucide-react'
+import { Search, MessageSquare, AlertCircle, Loader2, RefreshCw, X, ChevronDown, ChevronLeft, Info, Calendar, Database, Hash, Play, Pause, Image as ImageIcon, Link, Mic, CheckCircle, Copy, Check, CheckSquare, Download, BarChart3, Edit2, Trash2, BellOff, Users, FolderClosed, UserCheck, Crown, Aperture } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { createPortal } from 'react-dom'
 import { useChatStore } from '../stores/chatStore'
@@ -11,6 +11,8 @@ import { VoiceTranscribeDialog } from '../components/VoiceTranscribeDialog'
 import { LivePhotoIcon } from '../components/LivePhotoIcon'
 import { AnimatedStreamingText } from '../components/AnimatedStreamingText'
 import JumpToDatePopover from '../components/JumpToDatePopover'
+import { ContactSnsTimelineDialog } from '../components/Sns/ContactSnsTimelineDialog'
+import { type ContactSnsTimelineTarget, isSingleContactSession } from '../components/Sns/contactSnsTimeline'
 import * as configService from '../services/config'
 import {
   emitOpenSingleExport,
@@ -520,6 +522,7 @@ function ChatPage(props: ChatPageProps) {
   const [pendingVoiceTranscriptRequest, setPendingVoiceTranscriptRequest] = useState<{ sessionId: string; messageId: string } | null>(null)
   const [inProgressExportSessionIds, setInProgressExportSessionIds] = useState<Set<string>>(new Set())
   const [isPreparingExportDialog, setIsPreparingExportDialog] = useState(false)
+  const [chatSnsTimelineTarget, setChatSnsTimelineTarget] = useState<ContactSnsTimelineTarget | null>(null)
   const [exportPrepareHint, setExportPrepareHint] = useState('')
 
   // 消息右键菜单
@@ -2982,6 +2985,20 @@ function ChatPage(props: ChatPageProps) {
       )
     )
   )
+  const isCurrentSessionPrivateSnsSupported = Boolean(
+    currentSession &&
+    isSingleContactSession(currentSession.username) &&
+    !isCurrentSessionGroup
+  )
+
+  const openCurrentSessionSnsTimeline = useCallback(() => {
+    if (!currentSession || !isCurrentSessionPrivateSnsSupported) return
+    setChatSnsTimelineTarget({
+      username: currentSession.username,
+      displayName: currentSession.displayName || currentSession.username,
+      avatarUrl: currentSession.avatarUrl
+    })
+  }, [currentSession, isCurrentSessionPrivateSnsSupported])
 
   useEffect(() => {
     if (!standaloneSessionWindow) return
@@ -3904,6 +3921,16 @@ function ChatPage(props: ChatPageProps) {
                     )}
                   </button>
                 )}
+                {!standaloneSessionWindow && isCurrentSessionPrivateSnsSupported && (
+                  <button
+                    className="icon-btn chat-sns-timeline-btn"
+                    onClick={openCurrentSessionSnsTimeline}
+                    disabled={!currentSessionId}
+                    title="查看对方朋友圈"
+                  >
+                    <Aperture size={18} />
+                  </button>
+                )}
                 {!standaloneSessionWindow && (
                   <button
                     className={`icon-btn batch-transcribe-btn${isBatchTranscribing ? ' transcribing' : ''}`}
@@ -4006,6 +4033,11 @@ function ChatPage(props: ChatPageProps) {
                 <span>{exportPrepareHint}</span>
               </div>
             )}
+
+            <ContactSnsTimelineDialog
+              target={chatSnsTimelineTarget}
+              onClose={() => setChatSnsTimelineTarget(null)}
+            />
 
             <div className={`message-content-wrapper ${hasInitialMessages ? 'loaded' : 'loading'} ${isSessionSwitching ? 'switching' : ''}`}>
               {standaloneSessionWindow && standaloneLoadStage !== 'ready' && (
