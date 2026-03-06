@@ -4917,7 +4917,7 @@ function ExportPage() {
   const isSessionScopeDialog = exportDialog.scope === 'single' || exportDialog.scope === 'multi'
   const isContentScopeDialog = exportDialog.scope === 'content'
   const isContentTextDialog = isContentScopeDialog && exportDialog.contentType === 'text'
-  const useCollapsedSessionFormatSelector = isSessionScopeDialog
+  const useCollapsedSessionFormatSelector = isSessionScopeDialog || isContentTextDialog
   const shouldShowFormatSection = !isContentScopeDialog || isContentTextDialog
   const shouldShowMediaSection = !isContentScopeDialog
   const avatarExportStatusLabel = options.exportAvatars ? '已开启聊天消息导出带头像' : '已关闭聊天消息导出带头像'
