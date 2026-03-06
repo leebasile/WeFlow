@@ -1878,6 +1878,15 @@
     font-weight: 600;
     letter-spacing: 0.01em;
     flex-shrink: 0;
+
+    &.is-draggable {
+      cursor: grab;
+    }
+
+    &.is-dragging {
+      cursor: grabbing;
+      user-select: none;
+    }
   }
 
   .contacts-list-header-select {
@@ -1975,7 +1984,6 @@
     }
   }
 
-  .table-top-scrollbar,
   .table-bottom-scrollbar {
     flex: 0 0 auto;
     overflow-x: auto;
@@ -1998,11 +2006,6 @@
     }
   }
 
-  .table-top-scrollbar {
-    height: 14px;
-    border-bottom: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
-  }
-
   .table-bottom-scrollbar-inner {
     height: 1px;
   }
@@ -2010,10 +2013,6 @@
   .table-bottom-scrollbar {
     height: 16px;
     border-top: 1px solid color-mix(in srgb, var(--border-color) 80%, transparent);
-  }
-
-  .table-top-scrollbar-inner {
-    height: 1px;
   }
 
   .selection-clear-btn {

@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type UIEvent, type WheelEvent } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent, type UIEvent, type WheelEvent } from 'react'
 import { useLocation } from 'react-router-dom'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import { createPortal } from 'react-dom'
@@ -1512,6 +1512,7 @@ function ExportPage() {
   const [hasSeededSnsStats, setHasSeededSnsStats] = useState(false)
   const [nowTick, setNowTick] = useState(Date.now())
   const [isContactsListAtTop, setIsContactsListAtTop] = useState(true)
+  const [isContactsHeaderDragging, setIsContactsHeaderDragging] = useState(false)
   const [contactsHorizontalScrollMetrics, setContactsHorizontalScrollMetrics] = useState({
     viewportWidth: 0,
     contentWidth: 0
@@ -1537,11 +1538,16 @@ function ExportPage() {
   const contactsAvatarCacheRef = useRef<Record<string, configService.ContactsAvatarCacheEntry>>({})
   const contactsVirtuosoRef = useRef<VirtuosoHandle | null>(null)
   const sessionTableSectionRef = useRef<HTMLDivElement | null>(null)
-  const contactsTopScrollbarRef = useRef<HTMLDivElement | null>(null)
   const contactsHorizontalViewportRef = useRef<HTMLDivElement | null>(null)
   const contactsHorizontalContentRef = useRef<HTMLDivElement | null>(null)
   const contactsBottomScrollbarRef = useRef<HTMLDivElement | null>(null)
-  const contactsScrollSyncSourceRef = useRef<'viewport' | 'top' | 'bottom' | null>(null)
+  const contactsScrollSyncSourceRef = useRef<'viewport' | 'bottom' | null>(null)
+  const contactsHeaderDragStateRef = useRef({
+    pointerId: -1,
+    startClientX: 0,
+    startScrollLeft: 0,
+    didDrag: false
+  })
   const sessionFormatDropdownRef = useRef<HTMLDivElement | null>(null)
   const detailRequestSeqRef = useRef(0)
   const sessionsRef = useRef<SessionRow[]>([])
@@ -5666,17 +5672,12 @@ function ExportPage() {
       row.mutualFriends.statusLabel.startsWith('加载中')
     ))
   ), [sessionLoadDetailRows])
-  const syncContactsHorizontalScroll = useCallback((source: 'viewport' | 'top' | 'bottom', scrollLeft: number) => {
+  const syncContactsHorizontalScroll = useCallback((source: 'viewport' | 'bottom', scrollLeft: number) => {
     if (contactsScrollSyncSourceRef.current && contactsScrollSyncSourceRef.current !== source) return
 
     contactsScrollSyncSourceRef.current = source
-    const topScrollbar = contactsTopScrollbarRef.current
     const viewport = contactsHorizontalViewportRef.current
     const bottomScrollbar = contactsBottomScrollbarRef.current
-
-    if (source !== 'top' && topScrollbar && Math.abs(topScrollbar.scrollLeft - scrollLeft) > 1) {
-      topScrollbar.scrollLeft = scrollLeft
-    }
 
     if (source !== 'viewport' && viewport && Math.abs(viewport.scrollLeft - scrollLeft) > 1) {
       viewport.scrollLeft = scrollLeft
@@ -5695,12 +5696,63 @@ function ExportPage() {
   const handleContactsHorizontalViewportScroll = useCallback((event: UIEvent<HTMLDivElement>) => {
     syncContactsHorizontalScroll('viewport', event.currentTarget.scrollLeft)
   }, [syncContactsHorizontalScroll])
-  const handleContactsTopScrollbarScroll = useCallback((event: UIEvent<HTMLDivElement>) => {
-    syncContactsHorizontalScroll('top', event.currentTarget.scrollLeft)
-  }, [syncContactsHorizontalScroll])
   const handleContactsBottomScrollbarScroll = useCallback((event: UIEvent<HTMLDivElement>) => {
     syncContactsHorizontalScroll('bottom', event.currentTarget.scrollLeft)
   }, [syncContactsHorizontalScroll])
+  const resetContactsHeaderDrag = useCallback((currentTarget?: HTMLDivElement | null) => {
+    const dragState = contactsHeaderDragStateRef.current
+    if (currentTarget && dragState.pointerId >= 0 && currentTarget.hasPointerCapture(dragState.pointerId)) {
+      currentTarget.releasePointerCapture(dragState.pointerId)
+    }
+    dragState.pointerId = -1
+    dragState.startClientX = 0
+    dragState.startScrollLeft = 0
+    dragState.didDrag = false
+    setIsContactsHeaderDragging(false)
+  }, [])
+  const handleContactsHeaderPointerDown = useCallback((event: PointerEvent<HTMLDivElement>) => {
+    if (!hasContactsHorizontalOverflow || event.pointerType === 'touch') return
+    if (event.button !== 0) return
+    if (event.target instanceof Element && event.target.closest('button, a, input, textarea, select, label, [role="button"]')) {
+      return
+    }
+
+    contactsHeaderDragStateRef.current = {
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      startScrollLeft: contactsHorizontalViewportRef.current?.scrollLeft ?? 0,
+      didDrag: false
+    }
+    event.currentTarget.setPointerCapture(event.pointerId)
+    setIsContactsHeaderDragging(true)
+  }, [hasContactsHorizontalOverflow])
+  const handleContactsHeaderPointerMove = useCallback((event: PointerEvent<HTMLDivElement>) => {
+    const dragState = contactsHeaderDragStateRef.current
+    if (dragState.pointerId !== event.pointerId) return
+
+    const viewport = contactsHorizontalViewportRef.current
+    const content = contactsHorizontalContentRef.current
+    if (!viewport || !content) return
+
+    const deltaX = event.clientX - dragState.startClientX
+    if (!dragState.didDrag && Math.abs(deltaX) < 4) return
+
+    dragState.didDrag = true
+    const maxScrollLeft = Math.max(0, content.scrollWidth - viewport.clientWidth)
+    const nextScrollLeft = Math.max(0, Math.min(dragState.startScrollLeft - deltaX, maxScrollLeft))
+
+    viewport.scrollLeft = nextScrollLeft
+    syncContactsHorizontalScroll('viewport', nextScrollLeft)
+    event.preventDefault()
+  }, [syncContactsHorizontalScroll])
+  const handleContactsHeaderPointerUp = useCallback((event: PointerEvent<HTMLDivElement>) => {
+    if (contactsHeaderDragStateRef.current.pointerId !== event.pointerId) return
+    resetContactsHeaderDrag(event.currentTarget)
+  }, [resetContactsHeaderDrag])
+  const handleContactsHeaderPointerCancel = useCallback((event: PointerEvent<HTMLDivElement>) => {
+    if (contactsHeaderDragStateRef.current.pointerId !== event.pointerId) return
+    resetContactsHeaderDrag(event.currentTarget)
+  }, [resetContactsHeaderDrag])
   useEffect(() => {
     const viewport = contactsHorizontalViewportRef.current
     const content = contactsHorizontalContentRef.current
@@ -5721,17 +5773,6 @@ function ExportPage() {
 
       if (Math.abs(viewport.scrollLeft - clampedScrollLeft) > 1) {
         viewport.scrollLeft = clampedScrollLeft
-      }
-
-      const topScrollbar = contactsTopScrollbarRef.current
-      if (topScrollbar) {
-        const nextScrollLeft = Math.min(topScrollbar.scrollLeft, maxScrollLeft)
-        if (Math.abs(topScrollbar.scrollLeft - nextScrollLeft) > 1) {
-          topScrollbar.scrollLeft = nextScrollLeft
-        }
-        if (Math.abs(nextScrollLeft - clampedScrollLeft) > 1) {
-          topScrollbar.scrollLeft = clampedScrollLeft
-        }
       }
 
       const bottomScrollbar = contactsBottomScrollbarRef.current
@@ -6337,19 +6378,14 @@ function ExportPage() {
                     </div>
                   )}
 
-                  {hasFilteredContacts && hasContactsHorizontalOverflow && (
-                    <div
-                      ref={contactsTopScrollbarRef}
-                      className="table-top-scrollbar"
-                      onScroll={handleContactsTopScrollbarScroll}
-                      aria-label="会话列表顶部横向滚动条"
-                    >
-                      <div className="table-top-scrollbar-inner" style={contactsBottomScrollbarInnerStyle} />
-                    </div>
-                  )}
-
                   {hasFilteredContacts && (
-                    <div className="contacts-list-header">
+                    <div
+                      className={`contacts-list-header ${hasContactsHorizontalOverflow ? 'is-draggable' : ''} ${isContactsHeaderDragging ? 'is-dragging' : ''}`}
+                      onPointerDown={handleContactsHeaderPointerDown}
+                      onPointerMove={handleContactsHeaderPointerMove}
+                      onPointerUp={handleContactsHeaderPointerUp}
+                      onPointerCancel={handleContactsHeaderPointerCancel}
+                    >
                       <span className="contacts-list-header-select">
                         <button
                           className={`select-icon-btn ${isAllVisibleSelected ? 'checked' : ''}`}
