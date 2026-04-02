@@ -286,10 +286,6 @@ jobs:
           - 当前构建版本：\`${{ needs.prepare.outputs.dev_version }}\`
           - 此版本为每日构建的开发版，包含最新的功能和修复，但可能不够稳定，仅推荐用于测试和验证。
 
-          ## 渠道信息
-          - 更新通道：\`dev\`（Windows arm64 使用 \`dev-arm64\`）
-          - 固定发布页：$RELEASE_PAGE
-
           ## 下载
           - Windows x64: ${WINDOWS_URL:-$RELEASE_PAGE}
           - Windows arm64: ${WINDOWS_ARM64_URL:-$RELEASE_PAGE}
