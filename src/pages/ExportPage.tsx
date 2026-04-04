@@ -8217,6 +8217,7 @@ function ExportPage() {
                 </div>
               )}
 
+              {shouldShowImageDeepSearchToggle && (
                 <div className="dialog-section">
                   <div className="dialog-switch-row">
                     <div className="dialog-switch-copy">
