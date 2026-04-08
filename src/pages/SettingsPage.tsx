@@ -1672,7 +1672,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
       <div className="tab-content">
         <div className="form-group">
           <label>新消息通知</label>
-          <span className="form-hint">开启后，收���新消息时将显示桌面弹窗通知</span>
+          <span className="form-hint">开启后，收到新消息时将显示桌面弹窗通知</span>
           <div className="log-toggle-line">
             <span className="log-status">{notificationEnabled ? '已开启' : '已关闭'}</span>
             <label className="switch" htmlFor="notification-enabled-toggle">
@@ -3676,7 +3676,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
           <div className="updates-hero-main">
             <span className="updates-chip">当前版本</span>
             <h2>{appVersion || '...'}</h2>
-            <p>{updateInfo?.hasUpdate ? `发现新版本 v${updateInfo.version}` : '当前已是最新版本，可手动检查更���'}</p>
+            <p>{updateInfo?.hasUpdate ? `发现新版本 v${updateInfo.version}` : '当前已是最新版本，可手动检查更新'}</p>
           </div>
           <div className="updates-hero-action">
             {updateInfo?.hasUpdate ? (
