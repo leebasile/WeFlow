@@ -3,28 +3,28 @@
 WeFlow 是一个**完全本地**的微信**实时**聊天记录查看、分析与导出工具。它可以实时获取你的微信聊天记录并将其导出，还可以根据你的聊天记录为你生成独一无二的分析报告。
 
 <p align="center">
-  <a href="https://t.me/weflow_cc">
-    <img src="https://img.shields.io/badge/Telegram-频道-38BDF8?style=flat-square&logo=telegram&logoColor=white&labelColor=111827" alt="Telegram Channel">
-  </a>
-  <a href="https://github.com/hicccc77/WeFlow/stargazers">
-    <img src="https://img.shields.io/github/stars/hicccc77/WeFlow?style=flat-square&label=Stars&labelColor=111827&color=22D3EE" alt="Stargazers">
-  </a>
-  <a href="https://github.com/hicccc77/WeFlow/network/members">
-    <img src="https://img.shields.io/github/forks/hicccc77/WeFlow?style=flat-square&label=Forks&labelColor=111827&color=A78BFA" alt="Forks">
-  </a>
-  <a href="https://github.com/hicccc77/WeFlow/issues">
-    <img src="https://img.shields.io/github/issues/hicccc77/WeFlow?style=flat-square&label=Issues&labelColor=111827&color=F59E0B" alt="Issues">
-  </a>
-  <a href="https://github.com/hicccc77/WeFlow/releases">
-    <img src="https://img.shields.io/github/downloads/hicccc77/WeFlow/total?style=flat-square&label=Downloads&labelColor=111827&color=22C55E" alt="Downloads" />
-  </a>
-  <a href="https://www.star-history.com/hicccc77/weflow">
-    <img alt="Star History Rank" src="https://api.star-history.com/badge?repo=hicccc77/WeFlow&theme=dark" height="20" />
-  </a>
+  <img src="app.png" alt="WeFlow 应用预览" width="90%">
 </p>
 
 <p align="center">
-  <img src="app.png" alt="WeFlow 应用预览" width="90%">
+  <a href="https://github.com/hicccc77/WeFlow/stargazers" style="text-decoration: none !important; border: 0 !important; display: inline-block; line-height: 0;">
+    <img src="https://img.shields.io/github/stars/hicccc77/WeFlow?style=flat-square&label=Stars&labelColor=1F2937&color=2563EB" alt="Stargazers" height="20" style="display: block; border: 0; box-shadow: none;">
+  </a>
+  <a href="https://github.com/hicccc77/WeFlow/network/members" style="text-decoration: none !important; border: 0 !important; display: inline-block; line-height: 0;">
+    <img src="https://img.shields.io/github/forks/hicccc77/WeFlow?style=flat-square&label=Forks&labelColor=1F2937&color=7C3AED" alt="Forks" height="20" style="display: block; border: 0; box-shadow: none;">
+  </a>
+  <a href="https://github.com/hicccc77/WeFlow/issues" style="text-decoration: none !important; border: 0 !important; display: inline-block; line-height: 0;">
+    <img src="https://img.shields.io/github/issues/hicccc77/WeFlow?style=flat-square&label=Issues&labelColor=1F2937&color=D97706" alt="Issues" height="20" style="display: block; border: 0; box-shadow: none;">
+  </a>
+  <a href="https://github.com/hicccc77/WeFlow/releases" style="text-decoration: none !important; border: 0 !important; display: inline-block; line-height: 0;">
+    <img src="https://img.shields.io/github/downloads/hicccc77/WeFlow/total?style=flat-square&label=Downloads&labelColor=1F2937&color=059669" alt="Downloads" height="20" style="display: block; border: 0; box-shadow: none;" />
+  </a>
+  <a href="https://t.me/weflow_cc" style="text-decoration: none !important; border: 0 !important; display: inline-block; line-height: 0;">
+    <img src="https://img.shields.io/badge/Telegram-频道-1D9BF0?style=flat-square&logo=telegram&logoColor=white&labelColor=1F2937&color=1D9BF0" alt="Telegram Channel" height="20" style="display: block; border: 0; box-shadow: none;">
+  </a>
+    <a href="https://www.star-history.com/hicccc77/weflow" style="text-decoration: none !important; border: 0 !important; display: inline-block; line-height: 0;">
+    <img alt="Star History Rank" src="https://api.star-history.com/badge?repo=hicccc77/WeFlow&theme=dark" height="20" style="display: block; border: 0; box-shadow: none;" />
+  </a>
 </p>
 
 > [!TIP]
